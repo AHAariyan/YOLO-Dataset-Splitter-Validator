@@ -6,8 +6,9 @@ import yaml
 import logging
 import sys
 
-# -------- Configure logging ------------
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
+# --- Configure Logging ---
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S',
                     handlers=[
                         logging.StreamHandler(sys.stdout)
@@ -25,10 +26,11 @@ def split_dataset(
     """
     Splits an image dataset and its corresponding YOLO labels into training,
     validation, and test sets, and organizes them into the YOLO directory structure.
+    Handles label files with UUID prefixes (e.g., 'uuid-frame_00100.txt').
 
     Args:
-        source_images_dir (Path): Path to the directory containing all original images.
-        source_labels_dir (Path): Path to the directory containing all original YOLO .txt labels.
+        source_images_dir (Path): Path to the directory containing all original images (e.g., 'frame_00100.jpg').
+        source_labels_dir (Path): Path to the directory containing all original YOLO .txt labels (e.g., 'uuid-frame_00100.txt').
         output_root_dir (Path): The root directory where the new dataset structure will be created.
                                 (e.g., 'canteen_products_dataset/')
         train_ratio (float): Proportion of data for the training set.
@@ -55,6 +57,22 @@ def split_dataset(
 
     logging.info(f"Created dataset directory structure at: {output_root_dir}")
 
+    # --- Create a mapping from image stem to full label filename (including UUID) ---
+    label_mapping = {}
+    for label_file in source_labels_dir.iterdir():
+        if label_file.is_file() and label_file.suffix.lower() == '.txt':
+            # Extract the 'frame_XXXXX' part from the label filename
+            # Example: '0a5581f7-frame_00100.txt' -> 'frame_00100'
+            parts = label_file.stem.split('-')
+            if len(parts) > 1 and 'frame_' in label_file.stem:
+                image_stem_from_label = '-'.join(parts[1:])
+            else:
+                image_stem_from_label = label_file.stem # Fallback if no UUID prefix
+
+            label_mapping[image_stem_from_label] = label_file.name
+
+    logging.info(f"Found {len(label_mapping)} label files with corresponding image stems.")
+
     # Get list of all image files
     image_files = [f for f in source_images_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp']]
     random.shuffle(image_files) # Shuffle to ensure random split
@@ -62,8 +80,7 @@ def split_dataset(
     total_images = len(image_files)
     train_count = int(total_images * train_ratio)
     val_count = int(total_images * val_ratio)
-    # Test count takes the rest to ensure sum to 1.0 due to int casting
-    test_count = total_images - train_count - val_count
+    test_count = total_images - train_count - val_count # Test count takes the rest
 
     logging.info(f"Total images: {total_images}")
     logging.info(f"Splitting into: Train={train_count}, Val={val_count}, Test={test_count}")
@@ -83,25 +100,34 @@ def split_dataset(
     for split_name, files in splits.items():
         logging.info(f"Copying {len(files)} files to {split_name} set...")
         for img_path in files:
-            # Construct corresponding label path
-            label_path = source_labels_dir / (img_path.stem + ".txt")
+            # Look up the correct label filename using the image's stem
+            # This is the key change to handle the UUID prefix
+            actual_label_filename = label_mapping.get(img_path.stem)
+
+            # Construct the full path to the source label file
+            source_label_path = source_labels_dir / actual_label_filename if actual_label_filename else None
 
             # Destination paths
             dest_img_path = output_root_dir / "images" / split_name / img_path.name
-            dest_label_path = output_root_dir / "labels" / split_name / label_path.name
+            dest_label_path = output_root_dir / "labels" / split_name / (img_path.stem + ".txt") # YOLO expects frame_00100.txt
 
             # Copy image
             shutil.copy2(img_path, dest_img_path)
 
-            # Copy label (only if it exists, for images without annotations)
-            if label_path.exists():
-                shutil.copy2(label_path, dest_label_path)
+            # Copy label if found, otherwise create an empty one
+            if source_label_path and source_label_path.exists():
+                # Read content from the UUID-prefixed label file
+                with open(source_label_path, 'r') as src_f:
+                    label_content = src_f.read()
+                # Write content to the YOLO-expected filename (frame_00100.txt)
+                with open(dest_label_path, 'w') as dest_f:
+                    dest_f.write(label_content)
+                logging.debug(f"Copied label for {img_path.name} to {dest_label_path.name} in {split_name} set.")
             else:
-                # Create an empty .txt file if the image had no annotations
-                # This is important for YOLO to correctly understand negative samples.
+                # Create an empty .txt file if no corresponding label was found
                 with open(dest_label_path, 'w') as f:
                     pass # Create empty file
-                logging.debug(f"Created empty label file for {img_path.name} in {split_name} set.")
+                logging.debug(f"Created empty label file for {img_path.name} in {split_name} set (no original label found).")
 
     logging.info("Dataset splitting and organization complete.")
 
@@ -129,18 +155,21 @@ def split_dataset(
     logging.info(f"Generated dataset.yaml at: {dataset_yaml_path}")
     logging.info("Dataset is now ready for YOLOv11 training!")
 
+
 if __name__ == "__main__":
     # --- Configuration for your script ---
 
     # 1. Path to the folder containing your images from Label Studio export
     # This is the 'images/' folder inside your extracted Label Studio zip.
     # Example: /home/aariyan/Downloads/my_project_export/images/
-    SOURCE_IMAGES_DIR = Path("/media/aariyan/PseudoCode/AI/Labelling/canteen_labels/project-1-at-2025-07-07-12-01-dd1d44d3/images")
+    # Make sure this points to the folder containing 'frame_00001.jpg' etc.
+    SOURCE_IMAGES_DIR = Path("/media/aariyan/PseudoCode/AI/Labelling/canteen_labels/project-1-at-2025-07-07-12-01-dd1d44d3/filtered_data/images")
 
     # 2. Path to the folder containing your labels from Label Studio export
     # This is the 'labels/' folder inside your extracted Label Studio zip.
     # Example: /home/aariyan/Downloads/my_project_export/labels/
-    SOURCE_LABELS_DIR = Path("/media/aariyan/PseudoCode/AI/Labelling/canteen_labels/project-1-at-2025-07-07-12-01-dd1d44d3/labels")
+    # Make sure this points to the folder containing 'uuid-frame_00100.txt' etc.
+    SOURCE_LABELS_DIR = Path("/media/aariyan/PseudoCode/AI/Labelling/canteen_labels/project-1-at-2025-07-07-12-01-dd1d44d3/filtered_data/labels")
 
     # 3. Path to the classes.txt file from Label Studio export
     # This is the 'classes.txt' file at the root of your extracted Label Studio zip.

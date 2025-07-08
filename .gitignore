@@ -1,0 +1,15 @@
+# Ignore virtual environments
+.venv/
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+
+# Ignore IDE-specific files (PyCharm, IntelliJ)
+.idea/
+*.iml
+
+# Ignore logs, envs, or other generated files (optional)
+*.log
+*.env
+
